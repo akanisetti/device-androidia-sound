@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <inttypes.h>
 
 #include <log/log.h>
 #include <cutils/properties.h>
