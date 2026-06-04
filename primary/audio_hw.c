@@ -23,6 +23,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <inttypes.h>
@@ -730,12 +731,14 @@ static int out_get_presentation_position(const struct audio_stream_out *stream,
 static int getCapturePosition(const struct audio_stream_in *stream, int64_t* frames, int64_t* time1){
     if (stream == NULL || frames == NULL || time1 == NULL) {
         return -EINVAL;
-     }
+    }
     struct stream_in* in = (struct stream_in*)stream;
 
+    pthread_mutex_lock(&in->lock);
     *frames = in->frames_read;
     *time1 = in->timestamp_nsec;
-    ALOGV("%s: frames_read: %d, timestamp (nsec): %" PRIu64, __func__, in->frames_read, *time1);
+    pthread_mutex_unlock(&in->lock);
+    ALOGV("%s: frames_read: %" PRId64 ", timestamp (nsec): %" PRIu64, __func__, *frames, *time1);
 
     return 0;
 }
@@ -945,9 +948,17 @@ static int get_pcm_timestamp(struct pcm* pcm, uint32_t sample_rate, struct aec_i
     }
     ssize_t frames;
     if (isOutput) {
-       frames = pcm_get_buffer_size(pcm) - info->available;
+       frames = (ssize_t)pcm_get_buffer_size(pcm) - (ssize_t)info->available;
     } else {
-       frames = -info->available; /* rewind timestamp */
+#if UINT_MAX > SSIZE_MAX
+       if (info->available > (unsigned int)SSIZE_MAX) {
+           frames = -((ssize_t)SSIZE_MAX);
+       } else {
+           frames = -((ssize_t)info->available); /* rewind timestamp */
+       }
+#else
+       frames = -((ssize_t)info->available); /* rewind timestamp */
+#endif
     }
     timestamp_adjust(&info->timestamp, frames, sample_rate);
     return ret;
