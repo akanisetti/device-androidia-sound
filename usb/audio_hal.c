@@ -279,6 +279,14 @@ static void device_unlock(struct audio_device *adev) {
     pthread_mutex_unlock(&adev->lock);
 }
 
+static bool is_loopback_terminate_requested(struct audio_device *adev) {
+    bool terminate;
+    pthread_mutex_lock(&adev->param_thread_lock);
+    terminate = adev->terminate_sco_loopback;
+    pthread_mutex_unlock(&adev->param_thread_lock);
+    return terminate;
+}
+
 /*
  * streams list management
  */
@@ -779,7 +787,11 @@ static int adev_open_output_stream(struct audio_hw_device *hw_dev,
     *stream_out = &out->stream;
 
     // Apply mixer controls
-    apply_mixer_settings(out->adev->out_profile.card);
+    int mixer_card = -1;
+    device_lock(out->adev);
+    mixer_card = out->adev->out_profile.card;
+    device_unlock(out->adev);
+    apply_mixer_settings(mixer_card);
 
     return ret;
 }
@@ -1035,8 +1047,11 @@ static ssize_t in_read(struct audio_stream_in *stream, void* buffer, size_t byte
             }
         }
 
-        /* no need to acquire in->adev->lock to read mic_muted here as we don't change its state */
-        if (num_read_buff_bytes > 0 && in->adev->mic_muted)
+        bool mic_muted = false;
+        device_lock(in->adev);
+        mic_muted = in->adev->mic_muted;
+        device_unlock(in->adev);
+        if (num_read_buff_bytes > 0 && mic_muted)
             memset(buffer, 0, num_read_buff_bytes);
     } else {
         num_read_buff_bytes = 0; // reset the value after USB headset is unplugged
@@ -1272,7 +1287,11 @@ static void adev_close_input_stream(struct audio_hw_device *hw_dev __attribute__
     /* Close the pcm device */
     in_standby(&stream->common);
 
+    stream_lock(&in->lock);
     free(in->conversion_buffer);
+    in->conversion_buffer = NULL;
+    in->conversion_buffer_size = 0;
+    stream_unlock(&in->lock);
 
     free(stream);
 }
@@ -1310,6 +1329,8 @@ static void get_config_based_on_profile(alsa_device_profile* profile, struct pcm
 }
 
 static void get_device_info(struct audio_device* adev, alsa_device_profile* profile, struct pcm_config* config, int card, int device, int direction) {
+
+    device_lock(adev);
 
     //Profile
     profile->card = card;
@@ -1353,6 +1374,8 @@ static void get_device_info(struct audio_device* adev, alsa_device_profile* prof
     } else if(card == adev->usbcard) {
         get_config_based_on_profile(profile, &usb_hfp_config, config);
     }
+
+    device_unlock(adev);
 }
 
 static int get_pcm_card(const char* name)
@@ -1591,7 +1614,7 @@ int looper(struct audio_device *adev, struct pcm_config *in_config, struct pcm_c
         }
 
         //start loopback
-        while(!adev->terminate_sco_loopback){
+        while(!is_loopback_terminate_requested(adev)){
             memset(buf_in, 0 ,buf_size_in);
             memset(buf_out, 0, buf_size_out);
             memset(buf_remapped, 0, buf_size_remapped);
@@ -1651,7 +1674,7 @@ int looper(struct audio_device *adev, struct pcm_config *in_config, struct pcm_c
         }
     } else {
         //No conversion required, read from bt_in and directly write to usb_out
-        while(!adev->terminate_sco_loopback){
+        while(!is_loopback_terminate_requested(adev)){
             memset(buf_in, 0 ,buf_size_in);
             memset(buf_out, 0, buf_size_out);
 
